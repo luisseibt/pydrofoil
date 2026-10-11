@@ -1936,6 +1936,15 @@ class RegistersBase(object):
     def __init__(self):
         pass
 
+    # Register access for support code that only sees this base class (the
+    # RISC-V atomics, riscv/atomics.py); implemented by the model's Machine
+    # class in riscv/supportcoderiscv.py:get_main
+    def atomic_instbits(self):
+        raise NotImplementedError
+
+    def atomic_xreg(self, n):
+        raise NotImplementedError
+
 
 class ObjectBase(W_Root):
     _attrs_ = []

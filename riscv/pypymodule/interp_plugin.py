@@ -817,6 +817,16 @@ class MachineAbstractBase(object):
     def descr_set_htif_tohost(self, space, tohost):
         self.machine.g.rv_htif_tohost = tohost
 
+    @unwrap_spec(base=r_uint, size=r_uint, ptr=r_uint)
+    def descr_add_host_memory(self, space, base, size, ptr):
+        """Guest physical base..base+size is plain host memory at ptr that all
+        harts share (a DMI region of the simulator). Reads and writes still go
+        through the memory callbacks; LR/SC/AMO use the host memory directly
+        so they are atomic across harts (riscv/atomics.py)."""
+        mem = self.machine.g.mem
+        assert isinstance(mem, MemoryObserver)
+        mem.add_host_region(base, size, ptr)
+
     @unwrap_spec(insns_per_tick=int)
     def descr_set_instructions_per_tick(self, space, insns_per_tick):
         self.machine.g.rv_insns_per_tick = insns_per_tick
@@ -835,6 +845,16 @@ class MemoryObserver(mem_mod.MemBase):
     def __init__(self, wrapped):
         self.wrapped = wrapped
         self.memory_observer = None
+        # guest ranges that are plain host memory shared with the simulator
+        # (its DMI regions), only used by the atomics (host_address)
+        self.host_bases = []
+        self.host_sizes = []
+        self.host_ptrs = []
+
+    def add_host_region(self, base, size, ptr):
+        self.host_bases.append(base)
+        self.host_sizes.append(size)
+        self.host_ptrs.append(ptr)
 
     def read(self, start_addr, num_bytes, executable_flag=False):
         result = self.wrapped.read(start_addr, num_bytes, executable_flag)
@@ -858,6 +878,14 @@ class MemoryObserver(mem_mod.MemBase):
 
     def memory_info(self):
         return self.wrapped.memory_info()
+
+    def host_address(self, start_addr, num_bytes):
+        # the atomics bypass read/write, so the observer does not see them
+        for i in range(len(self.host_bases)):
+            base = self.host_bases[i]
+            if base <= start_addr and start_addr + num_bytes <= base + self.host_sizes[i]:
+                return self.host_ptrs[i] + (start_addr - base)
+        return self.wrapped.host_address(start_addr, num_bytes)
 
 
 class ApplevelCallbackMemory8(mem_mod.MemBase):
@@ -996,6 +1024,7 @@ W_RISCV64.typedef = TypeDef(
     _get_htif_tohost=interp2app(W_RISCV64.descr_get_htif_tohost),
     _set_htif_tohost=interp2app(W_RISCV64.descr_set_htif_tohost),
     _set_instructions_per_tick=interp2app(W_RISCV64.descr_set_instructions_per_tick),
+    _add_host_memory=interp2app(W_RISCV64.descr_add_host_memory),
     set_term_fd=interp2app(W_RISCV64.descr_set_term_fd),
     get_term_fd=interp2app(W_RISCV64.descr_get_term_fd),
 )
@@ -1042,6 +1071,7 @@ W_RISCV32.typedef = TypeDef(
     _get_htif_tohost=interp2app(W_RISCV32.descr_get_htif_tohost),
     _set_htif_tohost=interp2app(W_RISCV32.descr_set_htif_tohost),
     _set_instructions_per_tick=interp2app(W_RISCV32.descr_set_instructions_per_tick),
+    _add_host_memory=interp2app(W_RISCV32.descr_add_host_memory),
     set_term_fd=interp2app(W_RISCV32.descr_set_term_fd),
     get_term_fd=interp2app(W_RISCV32.descr_get_term_fd),
 )

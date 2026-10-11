@@ -5,6 +5,7 @@ from pydrofoil.supportcode import _platform_read_mem_slowpath, _platform_write_m
 from pydrofoil.bitvector import Integer
 from pydrofoil import elf
 from pydrofoil import mem as mem_mod
+from riscv import atomics
 
 from rpython.rlib.nonconst import NonConstant
 from rpython.rlib.objectmodel import we_are_translated, always_inline, specialize
@@ -30,20 +31,29 @@ with open(os.path.join(os.path.dirname(__file__), "riscv_model_version")) as f:
 def write_mem(machine, write_kind, addr_size, addr, n, data):
     assert addr_size in (64, 32)
     assert data.size() == n * 8
-    mem = jit.promote(machine.g).mem
+    g = jit.promote(machine.g)
+    mem = g.mem
     addr = addr.touint()
+    if g.atomic_kind != atomics.KIND_NONE and atomics.atomic_write(g, addr, n, data.touint()):
+        return True
     if n == 1 or n == 2 or n == 4 or n == 8:
         mem.write(addr, n, data.touint())
     else:
         _platform_write_mem_slowpath(machine, mem, write_kind, addr, n, data)
     return True
 
+# SC and AMO write through write_mem or write_mem_exclusive, depending on the
+# .aq/.rl bits, so both check the atomic flag (atomics.py).
+
 @unwrap("o o o i o")
 def write_mem_exclusive(machine, write_kind, addr_size, addr, n, data):
     assert addr_size in (64, 32)
     assert data.size() == n * 8
-    mem = jit.promote(machine.g).mem
+    g = jit.promote(machine.g)
+    mem = g.mem
     addr = addr.touint()
+    if g.atomic_kind != atomics.KIND_NONE and atomics.atomic_write(g, addr, n, data.touint()):
+        return True
     if n == 1 or n == 2 or n == 4 or n == 8:
         mem.write(addr, n, data.touint())
     else:
@@ -181,6 +191,14 @@ class Globals(object):
 
         self.reservation = r_uint(0)
         self.reservation_valid = False
+        # state of the atomic LR/SC/AMO implementation, see atomics.py
+        self.atomic_kind = atomics.KIND_NONE  # set while LR/SC/AMO executes
+        self.atomic_failed = False            # the SC's compare-and-swap failed
+        self.amo_op = 0                       # funct5 of the running AMO
+        self.amo_operand = r_uint(0)          # rs2 of the running AMO
+        self.amo_done = False                 # the AMO ran as host atomic
+        self.amo_old = r_uint(0)              # its old memory value
+        self.reservation_value = r_uint(0)    # value LR loaded
 
         self.dump_dict = {}
 
@@ -820,6 +838,7 @@ def get_main(outriscv, rv64):
             patch_checked_mem_function(outriscv, name)
     if rv64:
         patch_tlb(outriscv)
+    atomics.patch_execute(outriscv, rv64)
 
     @jit.not_in_trace
     def disassemble_current_inst(pc, m):
@@ -843,6 +862,16 @@ def get_main(outriscv, rv64):
 
         def set_pc(self, value):
             self._reg_zPC = value
+
+        # used by the atomic LR/SC/AMO implementation (atomics.py)
+        def atomic_instbits(self):
+            return self._reg_zinstbits
+
+        def atomic_xreg(self, n):
+            for i in atomics.XREGS:
+                if n == i:
+                    return r_uint(getattr(self, "_reg_zx%d" % i))
+            return r_uint(0)  # x0
 
         def tick_clock(self):
             return outriscv.func_ztick_clock(self, ())

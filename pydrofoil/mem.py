@@ -57,6 +57,14 @@ class MemBase(object):
     def memory_info(self):
         return None
 
+    def host_address(self, start_addr, num_bytes):
+        """Host address of the guest bytes start_addr..start_addr+num_bytes,
+        or 0 if this memory has none (e.g. callbacks into a simulator). Used
+        for the atomic LR/SC/AMO implementation (riscv/atomics.py), which
+        needs memory that all harts share as plain host memory: the DMI
+        regions of vcml-pydrofoil. Those have to override this."""
+        return 0
+
 # every word starts out as NORMAL. can transition to IMMUTABLE when used as
 # executable memory, which does not need a version change. transitioning from
 # NORMAL to MUTABLE does not need a version change either. only a transition
